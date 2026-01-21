@@ -96,7 +96,6 @@ Instead of relying on simple bit checks, the algorithm calculates the Luminance 
 
 ```cpp
 // Simplified Logic
-```
 // L = 0.299*R + 0.587*G + 0.114*B (Standard Grayscale Formula)
 int currentLum = getLuminance(pixel[i]);
 int prevLum    = getLuminance(pixel[i-1]);
@@ -108,7 +107,7 @@ if (contrast > THRESHOLD) {
     // The human eye cannot detect noise here. Safe to hide data.
     addToPool(i);
 }
-
+```
 ## 3. Collision Avoidance
 When mixing "Global Shuffling" (for the header) and "Adaptive Shuffling" (for the body), there is a risk of writing to the same pixel twice. The v6 engine implements a Used Pixel Map (vector<bool>) to track and skip already occupied pixels, ensuring data integrity.
 
