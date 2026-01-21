@@ -31,7 +31,7 @@ Unlike traditional tools that simply overwrite the Least Significant Bits (LSB) 
 
 Here is a demonstration of the tool's capability to hide data invisibly and destroy the carrier upon extraction.
 
-| **1. Locked (Stealth Mode)** | **2. Unlocked (Self-Destructed)** |
+| **1. Carrier (Stealth Mode)** | **2. Post-Extraction (Wiped)** |
 | :---: | :---: |
 | ![Stealth Image](kaplan.png) | ![Solved Image](kaplan2.png) |
 | *Looks identical to original. Contains encrypted data hidden with 2-bit LSB.* | *After correct password entry. Data is extracted, and used pixels are wiped (whitened).* |
@@ -69,9 +69,10 @@ Quality (1-5 bits): 3
 Password: my_secure_password
 Carrier Image: Must be a .bmp (Bitmap) file (24-bit).
 
-Quality: * 1-3 bits: Activates Adaptive Mode (High Stealth).
-
-6-8 bits: Activates Random Mode (High Capacity, lower stealth).
+Quality: 
+* **1-3 bits:** Recommended. Activates Adaptive Mode (High Stealth, Perfect for Text/PDFs).
+* **4-5 bits:** High Capacity Mode. Slight visual artifacts might be visible.
+* **Note:** Using higher bits increases capacity but reduces stealth.
 
 ## 2. Extracting a File (Decryption)
 Run the program and select Option 2.
@@ -91,15 +92,23 @@ It will extract the file, restore its original name (e.g., GIZLI_secret_plans.pd
 Before the actual file data, a 12-byte header is embedded using a fixed seed (Global Shuffle). [ SIGNATURE (7 bytes) ] + [ BIT_DEPTH (1 byte) ] + [ FILE_SIZE (4 bytes) ]
 
 ## 2. Adaptive Edge Detection (The "Smart" Part)
-The algorithm calculates the local contrast of pixels using their Most Significant Bits (MSB).
+Instead of relying on simple bit checks, the algorithm calculates the Luminance (Brightness) gradient between pixels. This mimics human vision sensitivity (where Green contributes more to brightness than Blue) to accurately find edges.
 
-C++
+```cpp
 // Simplified Logic
-int contrast = abs(pixel[i].MSB - pixel[i-1].MSB);
+```
+// L = 0.299*R + 0.587*G + 0.114*B (Standard Grayscale Formula)
+int currentLum = getLuminance(pixel[i]);
+int prevLum    = getLuminance(pixel[i-1]);
+
+int contrast = abs(currentLum - prevLum);
+
 if (contrast > THRESHOLD) {
-    // This is an edge/noisy area. Safe to hide data here.
+    // High contrast area (Edge/Texture). 
+    // The human eye cannot detect noise here. Safe to hide data.
     addToPool(i);
 }
+
 ## 3. Collision Avoidance
 When mixing "Global Shuffling" (for the header) and "Adaptive Shuffling" (for the body), there is a risk of writing to the same pixel twice. The v6 engine implements a Used Pixel Map (vector<bool>) to track and skip already occupied pixels, ensuring data integrity.
 
