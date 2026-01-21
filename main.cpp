@@ -1,39 +1,22 @@
 #include <iostream>
-#include <fstream>  // Binary modda dosya okuma/yazma işlemleri için gerekli
-#include <vector>   // Resim piksellerini dinamik bir dizide tutmak için gerekli
+#include <fstream>
+#include <vector>
 #include <string>
-#include <cstdint>  // uint8_t, uint32_t gibi sabit 
-#include <limits>   // cin.ignore kullanarak getline fonksiyonunda buffer temizliği yapmak için.
+#include <cstdint>
+#include <limits>
+#include <algorithm>
+#include <random>
+#include <numeric>
+#include <cmath>
 
 using namespace std;
 
-// BMP Baslik Yapisi (Standart)
 #pragma pack(push, 1)
-/*
-    C++ derleyicileri yapıları bellekte hızlı erişim için 4 veya 8 byte katlarına
-    tamamlar. Ancak BMP dosyasının başlığı diskte ardışık baytlar halinde. Eğer dolgu
-    (padding) yapılırsa dosya başlığı okumada problem yaşarım. pack(1) diyerek araya
-    hiç boşluk koyma dedim.
-*/
-// BMP başlık struct ı  BMP dosyasının ilk 54 baytını temsil ediyor.
-// Dosya tipi (BM imzası) genişlik yükseklik dosya boyutu gibi özel verileri tutuyor bu kısım.
 struct BmpBaslik {
-    uint16_t file_type;      
-    uint32_t file_size;      
-    uint16_t reserved1;
-    uint16_t reserved2;
-    uint32_t offset_data;    
-    uint32_t size;           
-    int32_t  width;
-    int32_t  height;
-    uint16_t planes;
-    uint16_t bit_count;      
-    uint32_t compression;
-    uint32_t size_image;     
-    int32_t  x_pixels_per_meter;
-    int32_t  y_pixels_per_meter;
-    uint32_t colors_used;
-    uint32_t colors_important;
+    uint16_t file_type; uint32_t file_size; uint16_t reserved1; uint16_t reserved2;
+    uint32_t offset_data; uint32_t size; int32_t  width; int32_t  height;
+    uint16_t planes; uint16_t bit_count; uint32_t compression; uint32_t size_image;
+    int32_t  x_pixels_per_meter; int32_t  y_pixels_per_meter; uint32_t colors_used; uint32_t colors_important;
 };
 #pragma pack(pop)
 
@@ -43,48 +26,120 @@ private:
     vector<uint8_t> pikselVerisi;
     vector<uint8_t> ekVeri;
     string aktifDosyaIsmi;
-    
-    /*
-        Buradaki imza yaklaşımı ile üzerine gizli mesaj yazılmamış ham
-        dosyaları ayırt ediyorum.
-        Yazdığım her gizli mesajın başına #GIZLI# başlığını da ekliyorum
-        böylece kodum bu mesajı görürse deşifre işleminde dosyayı dikkate
-        alıyor ama eğer göremezse hiç okumuyor direkt bu bmp dosyasında mesaj
-        yok diyor.
-    */
     const string IMZA = "#GIZLI#"; 
+    const int HEADER_BOYUTU = 12; 
+
+    vector<uint8_t> dosyayiBinaryOku(const string& yol) {
+        ifstream dosya(yol, ios::binary | ios::ate);
+        if (!dosya) return {};
+        streamsize boyut = dosya.tellg();
+        dosya.seekg(0, ios::beg);
+        vector<uint8_t> tampon(boyut);
+        if (dosya.read((char*)tampon.data(), boyut)) return tampon;
+        return {};
+    }
+
+    bool veriyiDosyayaYaz(const string& ad, const vector<uint8_t>& veri) {
+        ofstream dosya(ad, ios::binary);
+        if (!dosya) return false;
+        dosya.write((char*)veri.data(), veri.size());
+        return true;
+    }
+
+    void xorIslemi(vector<uint8_t>& veri, const string& parola) {
+        if (parola.empty()) return;
+        for (size_t i = 0; i < veri.size(); i++) {
+            veri[i] ^= (uint8_t)parola[i % parola.length()];
+        }
+    }
+
+    unsigned int tohumUret(const string& parola) {
+        unsigned int seed = 0;
+        for (char c : parola) seed = seed * 31 + c;
+        return seed;
+    }
+
+    vector<size_t> akilliIndeksleriGetir(const string& parola, int bitDerinligi, size_t gerekenPikselSayisi) {
+        bool adaptiveModAktif = (bitDerinligi <= 5);
+        if (!adaptiveModAktif) {
+             vector<size_t> indeksler(pikselVerisi.size());
+             iota(indeksler.begin(), indeksler.end(), 0);
+             mt19937 g(tohumUret(parola));
+             shuffle(indeksler.begin(), indeksler.end(), g);
+             return indeksler;
+        }
+
+        int bytesPerPixel = baslik.bit_count / 8;
+        if (bytesPerPixel < 1) bytesPerPixel = 1;
+        uint8_t msbMaskesi = ~((1 << bitDerinligi) - 1); 
+
+        vector<pair<int, size_t>> pikselSkorlari;
+        pikselSkorlari.reserve(pikselVerisi.size());
+
+        for (size_t i = 0; i < pikselVerisi.size(); ++i) {
+            int fark = 0;
+            if (i >= bytesPerPixel) {
+                uint8_t val1 = pikselVerisi[i] & msbMaskesi;
+                uint8_t val2 = pikselVerisi[i - bytesPerPixel] & msbMaskesi;
+                fark = abs(val1 - val2);
+            }
+            pikselSkorlari.push_back({fark, i});
+        }
+
+        stable_sort(pikselSkorlari.begin(), pikselSkorlari.end(), 
+            [](const pair<int, size_t>& a, const pair<int, size_t>& b) {
+                return a.first > b.first; 
+            });
+
+        size_t havuzBoyutu = gerekenPikselSayisi * 2; // Çakışma ihtimaline karşı tedbir alındı.
+        if (havuzBoyutu > pikselVerisi.size()) havuzBoyutu = pikselVerisi.size();
+
+        vector<size_t> secilenIndeksler;
+        secilenIndeksler.reserve(havuzBoyutu);
+        for(size_t i=0; i<havuzBoyutu; i++) secilenIndeksler.push_back(pikselSkorlari[i].second);
+
+        mt19937 g(tohumUret(parola));
+        shuffle(secilenIndeksler.begin(), secilenIndeksler.end(), g);
+        return secilenIndeksler;
+    }
+    
+    vector<size_t> globalShuffleIndeksleri(const string& parola) {
+        vector<size_t> indeksler(pikselVerisi.size());
+        iota(indeksler.begin(), indeksler.end(), 0);
+        mt19937 g(tohumUret(parola));
+        shuffle(indeksler.begin(), indeksler.end(), g);
+        return indeksler;
+    }
+
+    void intToBytes(uint32_t n, vector<uint8_t>& dest) {
+        dest.push_back(n & 0xFF); dest.push_back((n >> 8) & 0xFF);
+        dest.push_back((n >> 16) & 0xFF); dest.push_back((n >> 24) & 0xFF);
+    }
+
+    uint32_t bytesToInt(const vector<uint8_t>& src, int offset) {
+        uint32_t n = 0;
+        n |= src[offset]; n |= (src[offset + 1] << 8);
+        n |= (src[offset + 2] << 16); n |= (src[offset + 3] << 24);
+        return n;
+    }
 
 public:
+    size_t getPikselSayisi() const { return pikselVerisi.size(); }
+
     bool dosyaAc(const string& dosyaAdi) {
         aktifDosyaIsmi = dosyaAdi;
         ifstream dosya(dosyaAdi, ios::binary);
         if (!dosya) return false;
-
-        /*
-            reinterpret_cast yapısı ile başlığın adresini char olarak okumaya zorladım
-            çünkü read fonksiyonu benim ürettiğim BMPBaslik türünü tanımayacak onu
-            tanıdığı char olarak görmesini sağladım.
-        */
         dosya.read(reinterpret_cast<char*>(&baslik), sizeof(BmpBaslik));
-        if (baslik.file_type != 0x4D42) return false; // 0x4D42 ASCII kodunda B ve M harflerine denk gelir. Dosyanın BMP olup olmadığı kontrol ediliyor.
-
-        /*
-            Bazı BMP dosyalarında başlık ile piksel verisi arasında boşluk olabiliyor.
-            o aradaki veriyi kaybetmemek için ekVeri vektörü kullandım buraya yedekledim.
-            Bu sayede dosya üzerine şifre yazıp dosyayı tekrar kaydettiğimde bozulma yaşamıyorum.
-        */
+        if (baslik.file_type != 0x4D42) return false; 
         long boslukBoyutu = baslik.offset_data - sizeof(BmpBaslik);
         if (boslukBoyutu > 0) {
             ekVeri.resize(boslukBoyutu);
             dosya.read(reinterpret_cast<char*>(ekVeri.data()), boslukBoyutu);
-        } else {
-            ekVeri.clear();
-        }
-
+        } else ekVeri.clear();
         uint32_t veriBoyutu = baslik.size_image;
         if (veriBoyutu == 0) veriBoyutu = baslik.file_size - baslik.offset_data;
-
-        dosya.seekg(baslik.offset_data, ios::beg);  //offset_data kaç veri öteleme var, ios::beg başlangıç adresi
+        dosya.seekg(baslik.offset_data, ios::beg); 
         pikselVerisi.resize(veriBoyutu);
         dosya.read(reinterpret_cast<char*>(pikselVerisi.data()), veriBoyutu);
         dosya.close();
@@ -92,158 +147,201 @@ public:
     }
 
     void dosyayiKaydet() {
-        /*
-            ios::trunc → eski dosyanın içi boşaltıldı, ios::binary dosya tipinin resim olduğu vurgulandı, ios::out dosyaya yazılacağı belirtildi.
-        */
         ofstream dosya(aktifDosyaIsmi, ios::binary | ios::out | ios::trunc);
         if (dosya) {
-            dosya.write(reinterpret_cast<char*>(&baslik), sizeof(BmpBaslik)); // Başlık header yazıldı
-            if (!ekVeri.empty()) dosya.write(reinterpret_cast<char*>(ekVeri.data()), ekVeri.size()); // boşluk varsa o yazıldı dosyayı korumak için.
-            dosya.write(reinterpret_cast<char*>(pikselVerisi.data()), pikselVerisi.size());  // üzerine mesaj gizlediğimiz pikselleri döktü.
+            dosya.write(reinterpret_cast<char*>(&baslik), sizeof(BmpBaslik));
+            if (!ekVeri.empty()) dosya.write(reinterpret_cast<char*>(ekVeri.data()), ekVeri.size());
+            dosya.write(reinterpret_cast<char*>(pikselVerisi.data()), pikselVerisi.size());
             dosya.close();
-            cout << "Dosya guncellendi: " << aktifDosyaIsmi << endl;
-        } else {
-            cout << "Hata: Dosyaya yazilamadi!" << endl;
-        }
+            cout << "Resim guncellendi: " << aktifDosyaIsmi << endl;
+        } else cout << "Hata: Dosyaya yazilamadi!" << endl;
     }
 
-    bool gizle(string mesaj) {
-        /*
-            tamMesaj: Mesajın başına kodun başında bahsettiğim imzayı
-            sonuna da mesajın bittiğini anlamak için \0 ekledim.
-        */
-        string tamMesaj = IMZA + mesaj + '\0'; 
+    bool gizleDosya(string gizlenecekDosyaYolu, int veriBitDerinligi, const string& parola) {
+        vector<uint8_t> dosyaIcerigi = dosyayiBinaryOku(gizlenecekDosyaYolu);
+        if (dosyaIcerigi.empty()) return false;
+
+        vector<uint8_t> hamPaket;
+        for(char c : gizlenecekDosyaYolu) hamPaket.push_back(c);
+        hamPaket.push_back(0); 
+        hamPaket.insert(hamPaket.end(), dosyaIcerigi.begin(), dosyaIcerigi.end());
+        xorIslemi(hamPaket, parola);
+
+        vector<uint8_t> headerBytes;
+        for(char c : IMZA) headerBytes.push_back(c);
+        headerBytes.push_back((uint8_t)veriBitDerinligi);
+        uint32_t paketBoyutu = hamPaket.size();
+        intToBytes(paketBoyutu, headerBytes);
+
+        // --- ÇAKIŞMA KONTROLÜ ---
+        // Hangi piksellerin dolu olduğu takip edilir.
+        vector<bool> pikselDoluMu(pikselVerisi.size(), false);
+
+        // 1. HEADER YAZMA
+        vector<size_t> globalIndeksler = globalShuffleIndeksleri(parola);
+        int pikselSayaci = 0;
         
-        if (tamMesaj.length() * 8 > pikselVerisi.size()) {
-            cout << "Hata: Mesaj cok uzun!" << endl;
-            return false;
-        }
-        
-        /*
-            LSB (en anlamsız bit) mantığı
-            - (pikselVerisi[sira]) & 0xFE → 0xFE maskesi ile pikselin son bitini zorla 0 yapıyorum, temizliyorum.
-            - sonra karakterimin bitini oraya yazıyorum.
-        */
-        
-        int sira = 0;
-        for (char k : tamMesaj) {     // For döngüsünün böyle bir kullanımı daha varmış kodumda denemek istedim (normal for döngüsü)
-            for (int i = 0; i < 8; ++i) {
-                int bit = (k >> i) & 1;
-                pikselVerisi[sira] = (pikselVerisi[sira] & 0xFE) | bit;
-                sira++;
+        for (uint8_t byte : headerBytes) {
+            for (int b = 0; b < 8; ++b) {
+                size_t idx = globalIndeksler[pikselSayaci++];
+                
+                // Piksel işaretleme
+                pikselDoluMu[idx] = true;
+
+                pikselVerisi[idx] &= 0xFE; 
+                pikselVerisi[idx] |= ((byte >> b) & 1);
             }
+        }
+
+        // 2. BODY YAZMA
+        size_t gerekenPiksel = (hamPaket.size() * 8 + veriBitDerinligi - 1) / veriBitDerinligi;
+        vector<size_t> adaptiveIndeksler = akilliIndeksleriGetir(parola, veriBitDerinligi, gerekenPiksel);
+        
+        int paketIndex = 0, bitIndex = 0, adaptiveSayac = 0;
+        while (paketIndex < hamPaket.size()) {
+            if (adaptiveSayac >= adaptiveIndeksler.size()) break;
+            
+            size_t idx = adaptiveIndeksler[adaptiveSayac++];
+            
+            // --- Eğer bu piksel Header tarafından kullanıldıysa ATLA ---
+            if (pikselDoluMu[idx]) continue;
+
+            uint8_t maske = ~((1 << veriBitDerinligi) - 1);
+            pikselVerisi[idx] &= maske;
+            uint8_t veriParcasi = 0;
+            for (int b = 0; b < veriBitDerinligi; ++b) {
+                if (paketIndex >= hamPaket.size()) break;
+                uint8_t byte = hamPaket[paketIndex];
+                int bit = (byte >> bitIndex) & 1;
+                veriParcasi |= (bit << b);
+                bitIndex++;
+                if (bitIndex == 8) { bitIndex = 0; paketIndex++; }
+            }
+            pikselVerisi[idx] |= veriParcasi;
         }
         return true;
     }
 
-    string cozVeTemizle() {
-        string cozulmusVeri = "";
-        char anlikKarakter = 0;
-        int bitSayaci = 0;
-        int toplamOkunanBit = 0;
+    bool cozVeDosyaCikar(const string& parola) {
+        // Hangi piksellerin dolu olduğunu takip et (Okurken de atlamak için)
+        vector<bool> pikselDoluMu(pikselVerisi.size(), false);
 
-        for (size_t i = 0; i < pikselVerisi.size(); ++i) {
-            /*
-                Gizlenmiş veriyi geri çözüyorum
-                - Pikselin sadece son bitini alıyorum &1
-                - (sonBit << bitSayaci) ile bu biti, karakter dizilimindeki asıl yerine kaydırıyorum.
-                - |= opeartörü ile parça parça gelen bitleri birleştirip orijinal ASCII karakteri elde ediyorum.
-                - |= = operatörü yerine veya eşittir operatörünü eklemeli yazma için kullandık eğer = kullansaydık
-                ilk biti bulurdu sonra ikinci biti de bulurdu ama ilk bitin üzerine yazardı ilk biti kaybederdik.
-            */
-            int sonBit = pikselVerisi[i] & 1;
-            anlikKarakter |= (sonBit << bitSayaci);
-            bitSayaci++;
-            toplamOkunanBit++;
+        // 1. Header Oku
+        vector<size_t> globalIndeksler = globalShuffleIndeksleri(parola);
+        vector<uint8_t> okunanHeader(HEADER_BOYUTU);
+        int pikselSayaci = 0;
+        vector<size_t> temizlenecekPikseller;
 
-            if (bitSayaci == 8) {
-                // Eğer okuduğumuz karakter 0 ise (mesaj bitti demek)
-                if (anlikKarakter == '\0') {
-                    // Buraya geldiysek bir mesaj bulduk demektir.
-                    // Şimdi kontrol edelim: Bu mesaj bizim imza ile mi başlıyor?
-                    
-                    // İmza uzunluğu kadar kısmı kontrol et
-                    if (cozulmusVeri.length() >= IMZA.length() && 
-                        cozulmusVeri.substr(0, IMZA.length()) == IMZA) {
-                        
-                        // İmzayı siliyoruz, sadece gerçek mesajı kullanıcıya verelim
-                        string gercekMesaj = cozulmusVeri.substr(IMZA.length());
-                        
-                        // Güvenlik: Sadece geçerli mesaj varsa pikselleri beyaza boya
-                        for (int j = 0; j < toplamOkunanBit; ++j) {
-                            pikselVerisi[j] = 255;
-                        }
-                        
-                        return gercekMesaj;
-                    } else {
-                        // Bitiş karakteri bulduk ama imza yok. Demek ki bu rastgele bir resim.
-                        return ""; 
-                    }
-                }
+        for (int i = 0; i < HEADER_BOYUTU; ++i) {
+            uint8_t byte = 0;
+            for (int b = 0; b < 8; ++b) {
+                size_t idx = globalIndeksler[pikselSayaci++];
                 
-                cozulmusVeri += anlikKarakter;
-                anlikKarakter = 0;
-                bitSayaci = 0;
+                // Okuduğumuz header pikselini işaretle
+                pikselDoluMu[idx] = true;
+                temizlenecekPikseller.push_back(idx);
 
-                // Optimizasyon: Eğer okuduğumuz veri "IMZA" ile başlamıyorsa
-                // boşuna tüm resmi taramaya gerek yok, hemen çıkabiliriz.
-                if (cozulmusVeri.length() == IMZA.length()) {
-                    if (cozulmusVeri != IMZA) {
-                        return ""; // İmza tutmadı, bu resimde mesaj yok.
-                    }
+                byte |= ((pikselVerisi[idx] & 1) << b);
+            }
+            okunanHeader[i] = byte;
+        }
+
+        string okunanImza = "";
+        for(int i=0; i<IMZA.length(); i++) okunanImza += (char)okunanHeader[i];
+        if (okunanImza != IMZA) return false;
+
+        int bit = okunanHeader[IMZA.length()];
+        uint32_t boyut = bytesToInt(okunanHeader, IMZA.length() + 1);
+        if (bit < 1 || bit > 8) return false;
+
+        // 2. Body Oku (Atlama Mantığı ile)
+        size_t gerekenBodyBit = (size_t)boyut * 8;
+        size_t gerekenPiksel = (gerekenBodyBit + bit - 1) / bit;
+        
+        vector<size_t> adaptiveIndeksler = akilliIndeksleriGetir(parola, bit, gerekenPiksel);
+        vector<uint8_t> sifreliPaket(boyut);
+        int yazilanByte = 0, bitSayac = 0, adaptiveSayac = 0;
+        uint8_t anlikByte = 0;
+
+        while (yazilanByte < boyut) {
+            if (adaptiveSayac >= adaptiveIndeksler.size()) break;
+            size_t idx = adaptiveIndeksler[adaptiveSayac++];
+
+            // --- Çakışmayı önlemek için Header piksellerini burada da ATLA ---
+            if (pikselDoluMu[idx]) continue;
+
+            temizlenecekPikseller.push_back(idx); 
+            uint8_t val = pikselVerisi[idx] & ((1 << bit) - 1);
+            for (int b = 0; b < bit; ++b) {
+                int veriBit = (val >> b) & 1;
+                anlikByte |= (veriBit << bitSayac);
+                bitSayac++;
+                if (bitSayac == 8) {
+                    sifreliPaket[yazilanByte++] = anlikByte;
+                    anlikByte = 0; bitSayac = 0;
+                    if (yazilanByte >= boyut) break;
                 }
             }
         }
-        return "";
-    }
 
+        for (size_t idx : temizlenecekPikseller) pikselVerisi[idx] = 255; 
+        xorIslemi(sifreliPaket, parola);
+
+        string orijinalIsim = "";
+        size_t dataBaslangic = 0;
+        for (size_t i = 0; i < sifreliPaket.size(); ++i) {
+            if (sifreliPaket[i] == 0) { dataBaslangic = i + 1; break; }
+            orijinalIsim += (char)sifreliPaket[i];
+        }
+
+        if (dataBaslangic == 0 || dataBaslangic >= sifreliPaket.size()) return false;
+        
+        vector<uint8_t> dosyaData;
+        dosyaData.insert(dosyaData.end(), sifreliPaket.begin() + dataBaslangic, sifreliPaket.end());
+        
+        string cikisIsmi = "GIZLI_" + orijinalIsim;
+        if (veriyiDosyayaYaz(cikisIsmi, dosyaData)) {
+            cout << "\n[BASARILI] Dosya cikarildi: " << cikisIsmi << endl;
+            return true;
+        }
+        return false;
+    }
 };
 
 int main() {
     BmpIsleyici arac;
     int secim;
-    string dosyaAdi, girilenMesaj;
+    string resimYolu, hedefDosya, parola;
 
-    cout << "=== MENU ===" << endl;
-    cout << "1. Mesaj Gizle" << endl;
-    cout << "2. Mesaj Oku ve Yok Et (Beyaza boya)" << endl;
+    cout << "=== STEALTH STEGANOGRAPHY ===" << endl;
+    cout << "1. Dosya Gizle" << endl;
+    cout << "2. Dosya Cikar" << endl;
     cout << "Secim: ";
     cin >> secim;
 
-    cout << "Dosya adi: ";
-    cin >> dosyaAdi;
-
-    if (!arac.dosyaAc(dosyaAdi)) {
-        cout << "Hata: Dosya acilamadi!" << endl;
-        return 1;
-    }
+    cout << "Tasiyici Resim: ";
+    cin >> resimYolu;
+    if (!arac.dosyaAc(resimYolu)) { cout << "Dosya hatasi!" << endl; return 1; }
 
     if (secim == 1) {
-        /*
-            Önceki seçim işleminden kalma 'Enter' (\n) karakterini tampondan siliyorum.
-            Yoksa getline boş bir satır okuyup mesajı almadan geçer.
-        */
-        cin.ignore(numeric_limits<streamsize>::max(), '\n');
-        cout << "Mesajiniz: ";
-        getline(cin, girilenMesaj);
+        cout << "Gizlenecek Dosya: "; 
+        cin.ignore(numeric_limits<streamsize>::max(), '\n'); 
+        getline(cin, hedefDosya);
 
-        if (arac.gizle(girilenMesaj)) {
+        int bit; cout << "Kalite (1-5 bit onerilir, Max 8): "; cin >> bit; 
+        if (bit<1) bit=1; if(bit>8) bit=8;
+        
+        cout << "Parola: "; cin >> parola;
+        cout << "Analiz ve Gizleme basliyor..." << endl;
+        
+        if (arac.gizleDosya(hedefDosya, bit, parola)) {
             arac.dosyayiKaydet();
-            cout << "Mesaj gizlendi (Imzali)." << endl;
+            cout << "ISLEM TAMAM." << endl;
         }
     } else if (secim == 2) {
-        string sonuc = arac.cozVeTemizle();
-        
-        if (!sonuc.empty()) {
-            cout << "\n[+] GIZLI MESAJ BULUNDU: " << sonuc << endl;
-            arac.dosyayiKaydet(); 
-            cout << "Mesaj okundugu icin resimden kalici olarak silindi(beyaza boyandi)." << endl;
-        } else {
-            cout << "Bu resimde gizli bir mesaj yok (veya imza gecersiz)." << endl;
-        }
-    } else {
-        cout << "Gecersiz islem." << endl;
+        cout << "Parola: "; cin >> parola;
+        if (arac.cozVeDosyaCikar(parola)) arac.dosyayiKaydet();
+        else cout << "Hata: Dosya/Parola gecersiz." << endl;
     }
-
     return 0;
 }
