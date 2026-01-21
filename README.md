@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-None-red.svg)
 
-A high-performance, **anti-forensic steganography tool** developed from scratch in C++.
+A high-performance, **steganography tool** developed from scratch in C++.
 Unlike traditional tools that simply overwrite the Least Significant Bits (LSB) sequentially, this project employs **Adaptive Edge Detection** to hide data in the "noisy" parts of an image (edges, textures) while leaving smooth areas (like the sky) untouched.
 
 > **Note:** This project uses **Zero External Libraries** (No OpenCV, No Boost). It relies entirely on native C++ memory management, bitwise operations, and raw binary file manipulation.
