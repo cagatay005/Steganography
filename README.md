@@ -111,4 +111,4 @@ Capacity: Dependent on image resolution. A 1920x1080 image can hold approx 750KB
 #### License
 This project is open-source and available under the MIT License.
 
-Developed by [Mustafa Cagatay Ozdem] as a showcase of Low-Level C++ and Cybersecurity concepts.
+Developed by **Mustafa Cagatay Ozdem** as a showcase of Low-Level C++ and Cybersecurity concepts.
